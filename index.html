@@ -75,6 +75,20 @@
 
   /* Search */
   .search-wrap{position:relative;margin-top:6px;}
+  .search-pair{position:relative;display:flex;flex-direction:column;gap:8px;}
+  .swap-btn{
+    position:absolute;right:10px;top:50%;transform:translateY(-50%);
+    z-index:5;
+    background:var(--panel-bg-2);border:1px solid var(--line);color:var(--text-dim);
+    width:30px;height:30px;border-radius:9px;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;
+  }
+  .swap-btn:hover{color:var(--text);border-color:var(--sarmiento);}
+  .dest-clear{
+    position:absolute;right:44px;top:50%;transform:translateY(-50%);
+    color:var(--text-dim);cursor:pointer;font-family:var(--mono);font-size:16px;
+    display:none;
+  }
   .search-box{
     width:100%;
     background:var(--panel-bg);
@@ -267,13 +281,24 @@
 </header>
 
 <main>
-  <div class="search-wrap">
-    <input id="searchInput" class="search-box" type="text" autocomplete="off"
-      placeholder="Buscar estación (ej. Once, Morón, Merlo)…">
-    <span class="search-icon">
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-    </span>
-    <div id="suggestions" class="suggestions" style="display:none;"></div>
+  <div class="search-pair">
+    <div class="search-wrap">
+      <input id="searchInput" class="search-box" type="text" autocomplete="off"
+        placeholder="¿Desde dónde salís? (ej. Once)">
+      <span class="search-icon">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      </span>
+      <div id="suggestions" class="suggestions" style="display:none;"></div>
+    </div>
+    <div class="search-wrap">
+      <input id="destInput" class="search-box" type="text" autocomplete="off"
+        placeholder="¿Hasta dónde vas? (opcional)" style="padding-right:78px;">
+      <span class="dest-clear" id="destClear" title="Quitar destino">✕</span>
+      <span class="swap-btn" id="swapBtn" title="Intercambiar">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M7 10l5-5 5 5M7 14l5 5 5-5"/></svg>
+      </span>
+      <div id="destSuggestions" class="suggestions" style="display:none;"></div>
+    </div>
   </div>
 
   <div class="quickpicks" id="quickpicks"></div>
@@ -344,6 +369,10 @@
   const els = {
     input: document.getElementById('searchInput'),
     suggestions: document.getElementById('suggestions'),
+    destInput: document.getElementById('destInput'),
+    destSuggestions: document.getElementById('destSuggestions'),
+    destClear: document.getElementById('destClear'),
+    swapBtn: document.getElementById('swapBtn'),
     quickpicks: document.getElementById('quickpicks'),
     boardTitle: document.getElementById('boardTitle'),
     boardSub: document.getElementById('boardSub'),
@@ -358,11 +387,13 @@
   };
 
   let state = {
-    station: null,       // {id_estacion, nombre}
+    station: null,       // {id_estacion, nombre}  — origen
+    destination: null,   // {id_estacion, nombre}  — destino (opcional)
     results: [],         // arribos crudos
     activeSentido: null,
     refreshTimer: null,
     searchTimer: null,
+    destSearchTimer: null,
   };
 
   function safeStorage(){
@@ -377,6 +408,14 @@
   function loadLastStation(){
     if(!storage) return null;
     try{ return JSON.parse(storage.getItem('sarmiento_last_station')); }catch(e){ return null; }
+  }
+  function saveLastDestination(st){
+    if(!storage) return;
+    try{ storage.setItem('sarmiento_last_dest', st ? JSON.stringify(st) : ''); }catch(e){}
+  }
+  function loadLastDestination(){
+    if(!storage) return null;
+    try{ const raw = storage.getItem('sarmiento_last_dest'); return raw ? JSON.parse(raw) : null; }catch(e){ return null; }
   }
 
   function renderQuickpicks(){
@@ -451,10 +490,38 @@
     saveLastStation(station);
     els.input.value = '';
     els.suggestions.style.display = 'none';
-    els.boardTitle.innerHTML = escapeHtml(station.nombre) + ' <small id="boardSub"></small>';
+    updateBoardTitle();
     loadArrivals();
     if(state.refreshTimer) clearInterval(state.refreshTimer);
     state.refreshTimer = setInterval(loadArrivals, REFRESH_MS);
+  }
+
+  function selectDestination(station){
+    state.destination = station;
+    saveLastDestination(station);
+    els.destInput.value = '';
+    els.destSuggestions.style.display = 'none';
+    els.destClear.style.display = 'block';
+    updateBoardTitle();
+    if(state.station) loadArrivals();
+  }
+
+  function clearDestination(){
+    state.destination = null;
+    saveLastDestination(null);
+    els.destInput.value = '';
+    els.destClear.style.display = 'none';
+    updateBoardTitle();
+    if(state.station) loadArrivals();
+  }
+
+  function updateBoardTitle(){
+    if(!state.station){
+      els.boardTitle.textContent = 'Sin estación seleccionada';
+      return;
+    }
+    const arrow = state.destination ? (' → ' + escapeHtml(state.destination.nombre)) : '';
+    els.boardTitle.innerHTML = escapeHtml(state.station.nombre) + arrow + ' <small id="boardSub"></small>';
   }
 
   function escapeHtml(s){
@@ -493,7 +560,9 @@
     els.refreshBtn.classList.add('spinning');
     setStatus('buscando', 'Actualizando ' + state.station.nombre + '…');
     try{
-      const data = await apiGet('/arribos/estacion/' + state.station.id_estacion + '?cantidad=12');
+      let path = '/arribos/estacion/' + state.station.id_estacion + '?cantidad=12';
+      if(state.destination) path += '&hasta=' + state.destination.id_estacion;
+      const data = await apiGet(path);
       const results = (data && data.results) || [];
       state.results = results;
       renderBoard();
@@ -514,39 +583,49 @@
       return;
     }
 
-    // Agrupar por sentido, etiquetando con el destino final de ese grupo
-    const groups = {};
-    results.forEach(r => {
-      const sentido = r.servicio && r.servicio.sentido;
-      const destino = (r.servicio && r.servicio.hasta && r.servicio.hasta.estacion && r.servicio.hasta.estacion.nombre)
-        || (r.hasta && r.hasta.estacion && r.hasta.estacion.nombre) || 'Destino';
-      const key = String(sentido);
-      if(!groups[key]) groups[key] = { sentido, destino, items: [] };
-      groups[key].items.push(r);
-    });
-    const groupKeys = Object.keys(groups).sort();
+    let items;
 
-    if(!state.activeSentido || !groups[state.activeSentido]){
-      state.activeSentido = groupKeys[0];
-    }
-
-    if(groupKeys.length > 1){
-      els.tabs.style.display = 'flex';
-      els.tabs.innerHTML = '';
-      groupKeys.forEach(key => {
-        const g = groups[key];
-        const tab = document.createElement('div');
-        tab.className = 'tab' + (key === state.activeSentido ? ' active' : '');
-        tab.textContent = 'a ' + g.destino;
-        tab.addEventListener('click', () => { state.activeSentido = key; renderBoard(); });
-        els.tabs.appendChild(tab);
-      });
-    } else {
+    if(state.destination){
+      // Ya viene filtrado por destino (parámetro hasta): una sola lista, sin tabs
       els.tabs.style.display = 'none';
+      items = results.slice();
+    } else {
+      // Agrupar por sentido, etiquetando con el destino final de ese grupo
+      const groups = {};
+      results.forEach(r => {
+        const sentido = r.servicio && r.servicio.sentido;
+        const destino = (r.servicio && r.servicio.hasta && r.servicio.hasta.estacion && r.servicio.hasta.estacion.nombre)
+          || (r.hasta && r.hasta.estacion && r.hasta.estacion.nombre) || 'Destino';
+        const key = String(sentido);
+        if(!groups[key]) groups[key] = { sentido, destino, items: [] };
+        groups[key].items.push(r);
+      });
+      const groupKeys = Object.keys(groups).sort();
+
+      if(!state.activeSentido || !groups[state.activeSentido]){
+        state.activeSentido = groupKeys[0];
+      }
+
+      if(groupKeys.length > 1){
+        els.tabs.style.display = 'flex';
+        els.tabs.innerHTML = '';
+        groupKeys.forEach(key => {
+          const g = groups[key];
+          const tab = document.createElement('div');
+          tab.className = 'tab' + (key === state.activeSentido ? ' active' : '');
+          tab.textContent = 'a ' + g.destino;
+          tab.addEventListener('click', () => { state.activeSentido = key; renderBoard(); });
+          els.tabs.appendChild(tab);
+        });
+      } else {
+        els.tabs.style.display = 'none';
+      }
+
+      const active = groups[state.activeSentido] || groups[groupKeys[0]];
+      items = active.items.slice();
     }
 
-    const active = groups[state.activeSentido] || groups[groupKeys[0]];
-    const items = active.items.slice().sort((a,b) => {
+    items.sort((a,b) => {
       const la = (a.arribo && a.arribo.llegada) || {};
       const sa = (a.arribo && a.arribo.salida) || {};
       const lb = (b.arribo && b.arribo.llegada) || {};
@@ -574,11 +653,24 @@
     const delayMin = (!cancelado && programada && estimada) ? minutesDiff(estimada, programada) : 0;
     const isDelayed = delayMin >= DELAY_THRESHOLD_MIN;
     const eta = !cancelado ? minutesFromNow(showTime) : null;
-    const estado = (servicio.estado && servicio.estado.nombre) || (arribo.estado && arribo.estado.nombre) || '';
+    // El estado real viene anidado en servicio.desde.estado, no en servicio.estado
+    const estado = (servicio.desde && servicio.desde.estado && servicio.desde.estado.nombre)
+      || (arribo.estado && arribo.estado.nombre) || '';
     const destino = (servicio.hasta && servicio.hasta.estacion && servicio.hasta.estacion.nombre)
       || (item.hasta && item.hasta.estacion && item.hasta.estacion.nombre) || 'Destino';
     const numero = servicio.numero ? ('Servicio ' + servicio.numero) : '';
     const hasLiveGps = !!(servicio.location && servicio.location.lat);
+    const anden = arribo.anden && arribo.anden.nombre;
+
+    // Hora de llegada al destino elegido (solo si el usuario seleccionó destino)
+    let llegadaDestinoTxt = '';
+    if(state.destination && servicio.hasta && servicio.hasta.estacion){
+      const he = servicio.hasta.estacion;
+      const hLlegada = he.llegada || {};
+      const hSalida = he.salida || {};
+      const destTime = hLlegada.estimada || hLlegada.programada || hSalida.estimada || hSalida.programada;
+      if(destTime) llegadaDestinoTxt = 'llega ' + fmtTime(destTime);
+    }
 
     const row = document.createElement('div');
     row.className = 'row';
@@ -603,6 +695,9 @@
     if(estado){
       badges += '<span class="badge info">' + escapeHtml(estado) + '</span>';
     }
+    if(anden){
+      badges += '<span class="badge info">Andén ' + escapeHtml(anden) + '</span>';
+    }
     if(hasLiveGps){
       badges += '<span class="badge info"><span class="gps-dot"></span> GPS en vivo</span>';
     }
@@ -614,7 +709,7 @@
       '<div class="row-time ' + timeCls + '">' + fmtTime(showTime) + '<div style="font-size:9.5px;font-weight:400;color:var(--text-dim);letter-spacing:0.03em;">' + tipoHora + '</div></div>' +
       '<div class="row-mid">' +
         '<div class="row-dest">a ' + escapeHtml(destino) + '</div>' +
-        '<div class="row-meta">' + badges + (numero ? '<span>' + escapeHtml(numero) + '</span>' : '') + '</div>' +
+        '<div class="row-meta">' + badges + (numero ? '<span>' + escapeHtml(numero) + '</span>' : '') + (llegadaDestinoTxt ? '<span style="color:var(--sarmiento);">' + escapeHtml(llegadaDestinoTxt) + '</span>' : '') + '</div>' +
       '</div>' +
       etaHtml;
     return row;
@@ -695,6 +790,54 @@
     if(!els.suggestions.contains(e.target) && e.target !== els.input){
       els.suggestions.style.display = 'none';
     }
+    if(!els.destSuggestions.contains(e.target) && e.target !== els.destInput){
+      els.destSuggestions.style.display = 'none';
+    }
+  });
+
+  // Búsqueda con autocompletado — destino
+  els.destInput.addEventListener('input', () => {
+    const val = els.destInput.value;
+    clearTimeout(state.destSearchTimer);
+    if(val.trim().length < 2){
+      els.destSuggestions.style.display = 'none';
+      return;
+    }
+    state.destSearchTimer = setTimeout(async () => {
+      try{
+        const stations = await searchStations(val);
+        if(!stations.length){
+          els.destSuggestions.style.display = 'none';
+          return;
+        }
+        els.destSuggestions.innerHTML = '';
+        stations.slice(0,8).forEach(s => {
+          const item = document.createElement('div');
+          item.className = 'suggestion-item';
+          item.innerHTML = '<span>' + escapeHtml(s.nombre) + '</span><small>#' + s.id_estacion + '</small>';
+          item.addEventListener('click', () => selectDestination(s));
+          els.destSuggestions.appendChild(item);
+        });
+        els.destSuggestions.style.display = 'block';
+      }catch(e){
+        els.destSuggestions.style.display = 'none';
+      }
+    }, 300);
+  });
+
+  els.destClear.addEventListener('click', clearDestination);
+
+  els.swapBtn.addEventListener('click', () => {
+    if(!state.station || !state.destination) return;
+    const tmp = state.station;
+    state.station = state.destination;
+    state.destination = tmp;
+    saveLastStation(state.station);
+    saveLastDestination(state.destination);
+    markSelectedQuickpick(state.station.nombre);
+    els.destClear.style.display = 'block';
+    updateBoardTitle();
+    loadArrivals();
   });
 
   els.refreshBtn.addEventListener('click', loadArrivals);
@@ -702,6 +845,11 @@
   // Init
   renderQuickpicks();
   const last = loadLastStation();
+  const lastDest = loadLastDestination();
+  if(lastDest){
+    state.destination = lastDest;
+    els.destClear.style.display = 'block';
+  }
   if(last && last.id_estacion){
     markSelectedQuickpick(last.nombre);
     selectStation(last);
