@@ -301,6 +301,7 @@
     </div>
   </div>
 
+  <div id="quickpicksLabel" style="font-family:var(--mono);font-size:11px;color:var(--text-dim);margin-top:14px;">elegí origen:</div>
   <div class="quickpicks" id="quickpicks"></div>
 
   <div class="board">
@@ -373,6 +374,7 @@
     destSuggestions: document.getElementById('destSuggestions'),
     destClear: document.getElementById('destClear'),
     swapBtn: document.getElementById('swapBtn'),
+    quickpicksLabel: document.getElementById('quickpicksLabel'),
     quickpicks: document.getElementById('quickpicks'),
     boardTitle: document.getElementById('boardTitle'),
     boardSub: document.getElementById('boardSub'),
@@ -391,6 +393,7 @@
     destination: null,   // {id_estacion, nombre}  — destino (opcional)
     results: [],         // arribos crudos
     activeSentido: null,
+    activeField: 'origin', // 'origin' | 'destination' — cuál campo se está editando ahora
     refreshTimer: null,
     searchTimer: null,
     destSearchTimer: null,
@@ -478,8 +481,12 @@
       // preferir coincidencia exacta de nombre
       const exact = stations.find(s => normalize(s.nombre) === normalize(name));
       const chosen = exact || stations[0];
-      if(btnEl) markSelectedQuickpick(name);
-      selectStation(chosen);
+      if(state.activeField === 'destination'){
+        selectDestination(chosen);
+      } else {
+        if(btnEl) markSelectedQuickpick(name);
+        selectStation(chosen);
+      }
     }catch(e){
       setStatus('err', 'No se pudo conectar con la API');
     }
@@ -490,6 +497,7 @@
     saveLastStation(station);
     els.input.value = '';
     els.suggestions.style.display = 'none';
+    if(state.activeField !== 'destination') markSelectedQuickpick(station.nombre);
     updateBoardTitle();
     loadArrivals();
     if(state.refreshTimer) clearInterval(state.refreshTimer);
@@ -567,7 +575,7 @@
       state.results = results;
       renderBoard();
       renderAlerts();
-      setStatus('live', 'En vivo · actualizado ' + new Date().toLocaleTimeString('es-AR', {hour:'2-digit',minute:'2-digit',second:'2-digit', timeZone:'America/Argentina/Buenos_Aires'}));
+      setStatus('live', 'En vivo · actualizado ' + new Date().toLocaleTimeString('es-AR', {hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false, timeZone:'America/Argentina/Buenos_Aires'}));
     }catch(e){
       setStatus('err', 'No se pudo actualizar (reintentando en 30s)');
     }finally{
@@ -753,37 +761,66 @@
     });
   }
 
-  // Búsqueda con autocompletado
-  els.input.addEventListener('input', () => {
-    const val = els.input.value;
-    clearTimeout(state.searchTimer);
-    if(val.trim().length < 2){
-      els.suggestions.style.display = 'none';
+  // Muestra la lista de sugerencias: si el campo está vacío, la lista rápida
+  // de estaciones (funciona como "desplegable" al solo tocar el campo);
+  // si hay 2+ letras escritas, la búsqueda real contra la API.
+  function renderSuggestionItems(listEl, items, onPick){
+    listEl.innerHTML = '';
+    items.slice(0,10).forEach(it => {
+      const item = document.createElement('div');
+      item.className = 'suggestion-item';
+      item.innerHTML = '<span>' + escapeHtml(it.nombre) + '</span>' +
+        (it.id_estacion ? '<small>#' + it.id_estacion + '</small>' : '<small>tocar</small>');
+      item.addEventListener('click', () => onPick(it));
+      listEl.appendChild(item);
+    });
+    listEl.style.display = items.length ? 'block' : 'none';
+  }
+
+  async function openSuggestions(inputEl, listEl, onPick){
+    const val = inputEl.value.trim();
+    if(val.length < 2){
+      renderSuggestionItems(listEl, QUICK_STATIONS.map(n => ({ nombre:n })), async (it) => {
+        try{
+          const stations = await searchStations(it.nombre);
+          const exact = stations.find(s => normalize(s.nombre) === normalize(it.nombre));
+          onPick(exact || stations[0]);
+        }catch(e){ /* noop */ }
+      });
       return;
     }
-    state.searchTimer = setTimeout(async () => {
-      try{
-        const stations = await searchStations(val);
-        if(!stations.length){
-          els.suggestions.style.display = 'none';
-          return;
-        }
-        els.suggestions.innerHTML = '';
-        stations.slice(0,8).forEach(s => {
-          const item = document.createElement('div');
-          item.className = 'suggestion-item';
-          item.innerHTML = '<span>' + escapeHtml(s.nombre) + '</span><small>#' + s.id_estacion + '</small>';
-          item.addEventListener('click', () => {
-            markSelectedQuickpick(null);
-            selectStation(s);
-          });
-          els.suggestions.appendChild(item);
-        });
-        els.suggestions.style.display = 'block';
-      }catch(e){
-        els.suggestions.style.display = 'none';
-      }
-    }, 300);
+    try{
+      const stations = await searchStations(val);
+      renderSuggestionItems(listEl, stations, onPick);
+    }catch(e){
+      listEl.style.display = 'none';
+    }
+  }
+
+  // Campo origen
+  els.input.addEventListener('focus', () => {
+    state.activeField = 'origin';
+    els.quickpicksLabel.textContent = 'elegí origen:';
+    openSuggestions(els.input, els.suggestions, (s) => { markSelectedQuickpick(null); selectStation(s); });
+  });
+  els.input.addEventListener('input', () => {
+    clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(() => {
+      openSuggestions(els.input, els.suggestions, (s) => { markSelectedQuickpick(null); selectStation(s); });
+    }, 250);
+  });
+
+  // Campo destino
+  els.destInput.addEventListener('focus', () => {
+    state.activeField = 'destination';
+    els.quickpicksLabel.textContent = 'elegí destino:';
+    openSuggestions(els.destInput, els.destSuggestions, (s) => selectDestination(s));
+  });
+  els.destInput.addEventListener('input', () => {
+    clearTimeout(state.destSearchTimer);
+    state.destSearchTimer = setTimeout(() => {
+      openSuggestions(els.destInput, els.destSuggestions, (s) => selectDestination(s));
+    }, 250);
   });
 
   document.addEventListener('click', (e) => {
@@ -793,36 +830,6 @@
     if(!els.destSuggestions.contains(e.target) && e.target !== els.destInput){
       els.destSuggestions.style.display = 'none';
     }
-  });
-
-  // Búsqueda con autocompletado — destino
-  els.destInput.addEventListener('input', () => {
-    const val = els.destInput.value;
-    clearTimeout(state.destSearchTimer);
-    if(val.trim().length < 2){
-      els.destSuggestions.style.display = 'none';
-      return;
-    }
-    state.destSearchTimer = setTimeout(async () => {
-      try{
-        const stations = await searchStations(val);
-        if(!stations.length){
-          els.destSuggestions.style.display = 'none';
-          return;
-        }
-        els.destSuggestions.innerHTML = '';
-        stations.slice(0,8).forEach(s => {
-          const item = document.createElement('div');
-          item.className = 'suggestion-item';
-          item.innerHTML = '<span>' + escapeHtml(s.nombre) + '</span><small>#' + s.id_estacion + '</small>';
-          item.addEventListener('click', () => selectDestination(s));
-          els.destSuggestions.appendChild(item);
-        });
-        els.destSuggestions.style.display = 'block';
-      }catch(e){
-        els.destSuggestions.style.display = 'none';
-      }
-    }, 300);
   });
 
   els.destClear.addEventListener('click', clearDestination);
