@@ -7,8 +7,8 @@
 <meta name="description" content="Próximas formaciones, demoras y cancelaciones de la línea Sarmiento en tiempo real.">
 <meta name="theme-color" content="#eef3f8">
 <link rel="manifest" href="manifest.json">
-<link rel="icon" href="icons/icon-192.png" type="image/png">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Sarmiento">
@@ -167,11 +167,12 @@
     font-size:12.5px;outline:none;width:auto;
   }
   .dt-now-btn{
-    font-family:var(--mono);font-size:11.5px;color:var(--sarmiento);
+    font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--sarmiento);
     background:rgba(47,125,224,0.08);border:1px solid rgba(47,125,224,0.3);
-    border-radius:999px;padding:7px 13px;cursor:pointer;display:none;
+    border-radius:999px;padding:7px 13px;cursor:pointer;margin-left:auto;
   }
   .dt-now-btn:hover{background:rgba(47,125,224,0.16);}
+  .dt-now-btn.dt-now-active{background:var(--sarmiento);color:#fff;border-color:var(--sarmiento);}
 
   /* Board */
   .board{
@@ -244,8 +245,8 @@
   .badge.err{background:rgba(192,38,38,0.12);color:var(--red);}
   .badge.info{background:rgba(99,121,143,0.12);color:var(--text-dim);}
   .row-eta{
-    font-family:var(--mono);font-weight:700;font-size:13px;
-    width:56px;flex:none;text-align:right;color:var(--text-dim);
+    font-family:var(--mono);font-weight:700;font-size:12px;
+    width:64px;flex:none;text-align:right;color:var(--text-dim);
   }
   .row-eta.soon{color:var(--sarmiento);}
   .gps-dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;}
@@ -368,7 +369,7 @@
       <label for="timeInput">🕐</label>
       <input type="time" id="timeInput">
     </div>
-    <button class="dt-now-btn" id="nowBtn" type="button">volver a ahora</button>
+    <button class="dt-now-btn" id="nowBtn" type="button">Ahora</button>
   </div>
 
   <div class="board">
@@ -630,7 +631,7 @@
     const timeVal = els.timeInput.value; // 'HH:MM' o ''
     state.customDate = dateVal || null;
     state.customTime = timeVal || null;
-    els.nowBtn.style.display = (state.customDate || state.customTime) ? 'inline-block' : 'none';
+    els.nowBtn.classList.toggle('dt-now-active', !!(state.customDate || state.customTime));
     restartAutoRefresh();
     if(state.station) loadArrivals();
   }
@@ -640,7 +641,7 @@
     els.timeInput.value = '';
     state.customDate = null;
     state.customTime = null;
-    els.nowBtn.style.display = 'none';
+    els.nowBtn.classList.remove('dt-now-active');
     restartAutoRefresh();
     if(state.station) loadArrivals();
   }
@@ -683,6 +684,14 @@
   function minutesFromNow(iso){
     if(!iso) return null;
     return Math.round((new Date(iso) - new Date()) / 60000);
+  }
+
+  function formatEta(min){
+    if(min <= 0) return 'ahora';
+    if(min < 60) return min + ' min';
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return h + 'h ' + (m > 0 ? m + 'min' : '');
   }
 
   async function loadArrivals(){
@@ -799,9 +808,11 @@
     const hasLiveGps = !!(servicio.location && servicio.location.lat);
     const anden = arribo.anden && arribo.anden.nombre;
 
-    // Hora de llegada al destino elegido (solo si el usuario seleccionó destino)
+    // Hora de llegada al destino: la API la trae en servicio.hasta siempre
+    // (sea el destino final del ramal, o el elegido por el usuario vía "hasta"
+    // en la consulta) — no depende de que el usuario haya llenado el campo destino.
     let llegadaDestinoTxt = '';
-    if(state.destination && servicio.hasta && servicio.hasta.estacion){
+    if(servicio.hasta && servicio.hasta.estacion){
       const he = servicio.hasta.estacion;
       const hLlegada = he.llegada || {};
       const hSalida = he.salida || {};
@@ -818,7 +829,7 @@
       etaHtml = '<span class="row-eta">—</span>';
     } else if(eta !== null){
       const soon = eta <= 5;
-      etaHtml = '<span class="row-eta' + (soon ? ' soon' : '') + '">' + (eta <= 0 ? 'ahora' : eta + ' min') + '</span>';
+      etaHtml = '<span class="row-eta' + (soon ? ' soon' : '') + '">' + formatEta(eta) + '</span>';
     }
 
     let badges = '';
@@ -900,7 +911,7 @@
       const item = document.createElement('div');
       item.className = 'suggestion-item';
       item.innerHTML = '<span>' + escapeHtml(it.nombre) + '</span>' +
-        (it.id_estacion ? '<small>#' + it.id_estacion + '</small>' : '<small>tocar</small>');
+        (it.id_estacion ? '<small>#' + escapeHtml(String(it.id_estacion)) + '</small>' : '<small>tocar</small>');
       item.addEventListener('click', () => onPick(it));
       listEl.appendChild(item);
     });
@@ -911,11 +922,18 @@
     const val = inputEl.value.trim();
     if(val.length < 2){
       renderSuggestionItems(listEl, QUICK_STATIONS.map(n => ({ nombre:n })), async (it) => {
+        setStatus('buscando', 'Buscando "' + it.nombre + '"…');
         try{
           const stations = await searchStations(it.nombre);
+          if(!stations.length){
+            setStatus('err', 'No encontré la estación "' + it.nombre + '"');
+            return;
+          }
           const exact = stations.find(s => normalize(s.nombre) === normalize(it.nombre));
           onPick(exact || stations[0]);
-        }catch(e){ /* noop */ }
+        }catch(e){
+          setStatus('err', 'No se pudo conectar con la API');
+        }
       });
       return;
     }
